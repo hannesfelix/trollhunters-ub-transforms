@@ -1,0 +1,5 @@
+**/.env
+**/*.jar
+**/key.json
+**/.ipynb_checkpoints
+**/__pycache__/
