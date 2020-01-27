@@ -27,7 +27,10 @@ from gcsfs.utils import HttpError
 import logging
 import pickle
 
-
+# rehydrate.py
+# get files from parquet
+# rehydrate
+# write to kafka http://spark.apache.org/docs/latest/structured-streaming-kafka-integration.html#writing-the-output-of-batch-queries-to-kafka
 
 class FSCache():
     def __init__(self, fs, path):
@@ -91,8 +94,8 @@ def slow_lookup(api, cache, tweets, calls = 0):
         else:
             raise
 
-    for tw,r in zip(tweets, res):
-        cache.set(tw['id'], r)
+    # for tw,r in zip(tweets, res):
+        # cache.set(tw['id'], r)
 
     return tweets, res
 
@@ -133,47 +136,6 @@ def rehydrate(tweets):
     return results
 
 
-def parse_dates(obj, key):
-    _parse = lambda k,v: parse_dates(v, key) if k != key else parse_datetime(v)
-
-    if isinstance(obj, dict):
-        return {k:_parse(k,v) for k,v in obj.items()}
-    elif isinstance(obj, list):
-        return [parse_dates(vi, key) for vi in obj]
-    else:
-        return obj
-
-def replace_with_type(schema, target, NewType):
-    if hasattr(schema, 'fields'):
-        for field in schema.fields:
-            if field.name == target:
-                field.dataType = NewType()
-            else:
-                field.dataType = replace_with_type(field.dataType, target, NewType)
-        return schema
-    elif hasattr(schema, 'elementType'):
-        schema.elementType = replace_with_type(schema.elementType, target, NewType)
-        return schema
-    else:
-        return schema
-
-def replace_timestamps_in_schema(schema):
-    schema = deepcopy(schema)
-    schema = replace_with_type(schema, 'created_at', TimestampType)
-    schema = replace_with_type(schema, 'iDate', TimestampType)
-    return schema
-
-def replace_timestamps_in_dat(dat):
-    dat = parse_dates(dat, 'created_at')
-    # dat['original']['iDate'] = datetime.fromisoformat(dat['original']['iDate'])
-    return dat
-
-def tweet_json_with_timestamps(spark, df):
-    schema = replace_timestamps_in_schema(df.schema)
-    dat = df.rdd.map(replace_timestamps_in_dat)
-    return spark.createDataFrame(dat, schema)
-
-
 def get_tweepy():
     auth = tweepy.OAuthHandler(getenv('T_CONSUMER_TOKEN'), getenv('T_CONSUMER_SECRET'))
     auth.set_access_token(getenv('T_ACCESS_TOKEN'), getenv('T_TOKEN_SECRET'))
@@ -187,27 +149,25 @@ def get_tweepy():
 
     return api
 
-def build_spark():
-    spark = SparkSession \
-        .builder \
-        .appName("Rehydrate Tweets") \
-        .config("spark.jars", "/home/jovyan/work/gcs-connector-hadoop2-latest.jar") \
-        .config("spark.hadoop.fs.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem") \
-        .config("spark.hadoop.google.cloud.auth.service.account.enable", "true") \
-        .config("spark.hadoop.google.cloud.auth.service.account.json.keyfile", "/home/jovyan/work/key.json") \
-        .config("spark.driver.memory", "24g") \
-        .config("spark.executor.memory", "8g") \
-        .getOrCreate()
 
-    return spark
+def get_consumer():
+    kafka_brokers = os.getenv('KAFKA_BROKERS') # "localhost:9092"
+    topic = os.getenv('REHYDRATE_TOPIC') # ubdata
 
+    c = Consumer({
+        'bootstrap.servers': kafka_brokers,
+        'group.id': 'rehydrate',
+        'auto.offset.reset': 'earliest',
+        'enable.auto.commit': False
+    })
 
+    c.subscribe([topic])
 
-def read_schema(path):
-    fs = GCSFileSystem(project='trollhunters')
-    with fs.open(path, 'rb') as f:
-        schema = pickle.load(f)
-    return schema
+    # Sleep a bit to wait for other consumers to join
+    sleep(5)
+
+    return c
+
 
 def write(month, outpath, percentage = 0.01):
     spark = build_spark()
@@ -220,19 +180,12 @@ def write(month, outpath, percentage = 0.01):
 
     tweets = tweets \
         .rdd \
-        .repartition(96000) \
-        .map(lambda x: x.asDict()) \
-        .mapPartitions(rehydrate, preservesPartitioning=True) \
-        .map(replace_timestamps_in_dat)
+        .repartition(80000)
 
-    schema = read_schema('gs://spain-tweets/schemas/tweet-3.pickle')
-
-    # tdf = spark.read.json(tweets.map(lambda x: orjson.dumps(x).decode('utf-8')))
-    # tweet_json_with_timestamps(spark, tdf)
-
-    spark.createDataFrame(tweets, schema).write \
-                                   .mode('overwrite') \
-                                   .parquet(outpath)
+    # make into key/value columns? json.dumps
+    
+    # produce to kafka "tweets" channel
+    # write to kafka
 
 
 
